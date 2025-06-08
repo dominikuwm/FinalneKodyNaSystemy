@@ -1,0 +1,111 @@
+#define FCY 4000000UL
+#include <xc.h>
+#include <stdint.h>
+#include <libpic30.h>
+
+#pragma config POSCMOD = NONE, FNOSC = FRC
+#pragma config FCKSM = CSDCMD, IESO = OFF, OSCIOFNC = OFF
+#pragma config WDTPS = PS32768, FWPSA = PR128, FWDTEN = OFF, WINDIS = ON
+#pragma config ICS = PGx2, GWRP = OFF, GCP = OFF, JTAGEN = OFF
+
+#define ALARM_THRESHOLD   512
+#define BLINK_DURATION_MS 5000
+#define BLINK_INTERVAL_MS 500
+
+volatile uint8_t alarmActive = 0;
+volatile uint8_t alarmReset = 0;
+
+void __attribute__((interrupt, no_auto_psv)) _CNInterrupt(void)
+{
+    if (!PORTDbits.RD6)
+        alarmReset = 1;
+
+    IFS1bits.CNIF = 0;
+}
+
+static void initIO(void)
+{
+    TRISA = 0x0000;
+    TRISDbits.TRISD6 = 1;
+
+    AD1PCFG = 0xFFFF;
+    AD1PCFGbits.PCFG5 = 0;
+
+    CNEN1bits.CN15IE = 1;
+    IFS1bits.CNIF = 0;
+    IEC1bits.CNIE = 1;
+}
+
+static void initADC(void)
+{
+    AD1CON1 = 0;
+    AD1CON2 = 0;
+    AD1CON3 = 0x1F02;
+    AD1CHS  = 0x0005;
+    AD1CON1bits.ADON = 1;
+}
+
+static uint16_t readPot(void)
+{
+    AD1CON1bits.SAMP = 1;
+    __delay_us(10);
+    AD1CON1bits.SAMP = 0;
+    while (!AD1CON1bits.DONE);
+    return ADC1BUF0 & 0x03FF;
+}
+
+static inline void clearLEDs(void)
+{
+    LATA = 0x00;
+}
+
+static inline void allLEDsOn(void)
+{
+    LATA = 0xFF;
+}
+
+int main(void)
+{
+    initIO();
+    initADC();
+
+    while (1)
+    {
+        uint16_t potValue = readPot();
+
+        if (!alarmActive && potValue >= ALARM_THRESHOLD)
+        {
+            alarmActive = 1;
+            uint16_t elapsed = 0;
+
+            while (elapsed < BLINK_DURATION_MS && !alarmReset)
+            {
+                LATA = 0x01;
+                __delay_ms(BLINK_INTERVAL_MS);
+
+                LATA = 0x00;
+                __delay_ms(BLINK_INTERVAL_MS);
+
+                elapsed += 2 * BLINK_INTERVAL_MS;
+
+                potValue = readPot();
+                if (potValue < ALARM_THRESHOLD)
+                {
+                    alarmActive = 0;
+                    clearLEDs();
+                    break;
+                }
+            }
+
+            if (alarmActive && !alarmReset)
+                allLEDsOn();
+        }
+
+        if (alarmActive && (alarmReset || readPot() < ALARM_THRESHOLD))
+        {
+            alarmActive = 0;
+            clearLEDs();
+            alarmReset = 0;
+        }
+    }
+}
